@@ -1,0 +1,28 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DuckSharding.Shared", "DuckSharding.Shared\DuckSharding.Shared.csproj", "{3E88B920-99C7-4FBF-83BF-14FD9755E95F}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DuckSharding.Coordinator", "DuckSharding.Coordinator\DuckSharding.Coordinator.csproj", "{413A5FB7-4CA6-436A-90ED-BFB432E8B78A}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DuckSharding.Shard", "DuckSharding.Shard\DuckSharding.Shard.csproj", "{2E05DF04-6B8D-41CB-A58A-547920851281}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{3E88B920-99C7-4FBF-83BF-14FD9755E95F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3E88B920-99C7-4FBF-83BF-14FD9755E95F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3E88B920-99C7-4FBF-83BF-14FD9755E95F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3E88B920-99C7-4FBF-83BF-14FD9755E95F}.Release|Any CPU.Build.0 = Release|Any CPU
+		{413A5FB7-4CA6-436A-90ED-BFB432E8B78A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{413A5FB7-4CA6-436A-90ED-BFB432E8B78A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{413A5FB7-4CA6-436A-90ED-BFB432E8B78A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{413A5FB7-4CA6-436A-90ED-BFB432E8B78A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{2E05DF04-6B8D-41CB-A58A-547920851281}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2E05DF04-6B8D-41CB-A58A-547920851281}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2E05DF04-6B8D-41CB-A58A-547920851281}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{2E05DF04-6B8D-41CB-A58A-547920851281}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal
