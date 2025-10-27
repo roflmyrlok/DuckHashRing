@@ -9,7 +9,7 @@ public class ShardProcessManager
     private readonly Coordinator _coordinator;
     private readonly IKubernetes _k8sClient;
     private readonly string _namespace;
-    private int _nextPort = 30001; // NodePort range starts at 30000
+    private int _nextPort = 30001;
 
     public ShardProcessManager(Coordinator coordinator, IConfiguration configuration)
     {
@@ -29,7 +29,6 @@ public class ShardProcessManager
         var port = _nextPort++;
         var dbFileName = $"shard{port}.db";
         
-        // Create Deployment
         var deployment = new V1Deployment
         {
             Metadata = new V1ObjectMeta
@@ -89,8 +88,7 @@ public class ShardProcessManager
         };
 
         await _k8sClient.AppsV1.CreateNamespacedDeploymentAsync(deployment, _namespace);
-
-        // Create Service
+        
         var service = new V1Service
         {
             Metadata = new V1ObjectMeta
@@ -104,7 +102,7 @@ public class ShardProcessManager
             },
             Spec = new V1ServiceSpec
             {
-                Type = "NodePort",
+                Type = "ClusterIP",
                 Selector = new Dictionary<string, string>
                 {
                     ["app"] = "duck-shard",
@@ -115,19 +113,16 @@ public class ShardProcessManager
                     new V1ServicePort
                     {
                         Port = 8080,
-                        TargetPort = 8080,
-                        NodePort = port
+                        TargetPort = 8080
                     }
                 }
             }
         };
 
         await _k8sClient.CoreV1.CreateNamespacedServiceAsync(service, _namespace);
-
-        // Wait for pod to be ready
         await Task.Delay(5000);
 
-        var shardInfo = new ShardInfo(shardId, "localhost", port);
+        var shardInfo = new ShardInfo(shardId, $"{shardId}.{_namespace}.svc.cluster.local", 8080);
         _coordinator.AddShard(shardInfo);
 
         return shardInfo;
