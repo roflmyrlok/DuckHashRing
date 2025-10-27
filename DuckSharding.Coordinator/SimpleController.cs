@@ -35,18 +35,18 @@ public class SimpleController : ControllerBase
     }
 
     [HttpPost("shards/stop/{shardId}")]
-    public IActionResult StopShard(string shardId)
+    public async Task<IActionResult> StopShard(string shardId)
     {
-        var stopped = _processManager.StopShard(shardId);
+        var stopped = await _processManager.StopShardAsync(shardId);
         if (!stopped) return NotFound();
-        
+    
         return Ok(new { message = $"Shard {shardId} stopped successfully" });
     }
 
     [HttpGet("shards/processes")]
-    public IActionResult GetShardProcesses()
+    public async Task<IActionResult> GetShardProcesses()
     {
-        var processes = _processManager.GetShardProcesses();
+        var processes = await _processManager.GetShardProcessesAsync();
         return Ok(processes);
     }
 

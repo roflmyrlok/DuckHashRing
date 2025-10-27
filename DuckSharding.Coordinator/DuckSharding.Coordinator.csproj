@@ -21,7 +21,11 @@
       <PackageReference Include="Swashbuckle.AspNetCore.SwaggerGen" Version="9.0.6" />
       <PackageReference Include="Swashbuckle.AspNetCore.SwaggerUI" Version="9.0.6" />
     </ItemGroup>
-
+    
+    <ItemGroup>
+    <PackageReference Include="KubernetesClient" Version="13.0.37" />
+    </ItemGroup>
+    
     <ItemGroup>
       <_ContentIncludedByDefault Remove="Components\App.razor" />
       <_ContentIncludedByDefault Remove="Components\Layout\MainLayout.razor" />
