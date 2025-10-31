@@ -9,71 +9,21 @@ public class SimpleController : ControllerBase
 {
     private readonly Coordinator _coordinator;
     private readonly ShardClient _shardClient;
-    private readonly ShardProcessManager _processManager;
 
     public SimpleController(
         Coordinator coordinator, 
-        ShardClient shardClient,
-        ShardProcessManager processManager)
+        ShardClient shardClient)
     {
         _coordinator = coordinator;
         _shardClient = shardClient;
-        _processManager = processManager;
     }
-
-    // shard coord part
     
-    [HttpPost("shards/start")]
-    public async Task<IActionResult> StartShard([FromQuery] string? shardId = null)
-    {
-        var shard = await _processManager.StartShardAsync(shardId);
-        return Ok(new 
-        { 
-            message = "Shard started successfully", 
-            shard = shard 
-        });
-    }
-
-    [HttpPost("shards/stop/{shardId}")]
-    public IActionResult StopShard(string shardId)
-    {
-        var stopped = _processManager.StopShard(shardId);
-        if (!stopped) return NotFound();
-        
-        return Ok(new { message = $"Shard {shardId} stopped successfully" });
-    }
-
-    [HttpGet("shards/processes")]
-    public IActionResult GetShardProcesses()
-    {
-        var processes = _processManager.GetShardProcesses();
-        return Ok(processes);
-    }
-
-
-    [HttpPost("shards/register")]
-    public IActionResult RegisterShard([FromBody] ShardInfo shard)
-    {
-        _coordinator.AddShard(shard);
-        return Ok(new { message = $"Shard {shard.ShardId} registered successfully" });
-    }
-
-    [HttpDelete("shards/{shardId}")]
-    public IActionResult RemoveShard(string shardId)
-    {
-        var removed = _coordinator.RemoveShard(shardId);
-        if (!removed) return NotFound();
-        
-        return Ok(new { message = $"Shard {shardId} removed successfully" });
-    }
-
     [HttpGet("shards")]
     public IActionResult GetAllShards()
     {
         var shards = _coordinator.GetAllShards();
         return Ok(shards);
     }
-    // duck part
 
     [HttpPut("ducks")]
     public async Task<IActionResult> CreateDuck([FromBody] Duck duck)
@@ -139,8 +89,6 @@ public class SimpleController : ControllerBase
 
         return Ok(new { message = "Duck deleted successfully" });
     }
-
-    // view ring
 
     [HttpGet("ring")]
     public IActionResult GetRing()

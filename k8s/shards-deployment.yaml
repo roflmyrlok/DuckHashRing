@@ -1,0 +1,128 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shard-1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: duck-shard
+      shard-id: shard-1
+  template:
+    metadata:
+      labels:
+        app: duck-shard
+        shard-id: shard-1
+    spec:
+      containers:
+        - name: shard
+          image: ducksharding-shard:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          env:
+            - name: ASPNETCORE_URLS
+              value: "http://+:8080"
+            - name: Shard__ShardId
+              value: "shard-1"
+            - name: Database__FileName
+              value: "shard1.db"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shard-1
+spec:
+  type: ClusterIP
+  selector:
+    app: duck-shard
+    shard-id: shard-1
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shard-2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: duck-shard
+      shard-id: shard-2
+  template:
+    metadata:
+      labels:
+        app: duck-shard
+        shard-id: shard-2
+    spec:
+      containers:
+        - name: shard
+          image: ducksharding-shard:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          env:
+            - name: ASPNETCORE_URLS
+              value: "http://+:8080"
+            - name: Shard__ShardId
+              value: "shard-2"
+            - name: Database__FileName
+              value: "shard2.db"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shard-2
+spec:
+  type: ClusterIP
+  selector:
+    app: duck-shard
+    shard-id: shard-2
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shard-3
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: duck-shard
+      shard-id: shard-3
+  template:
+    metadata:
+      labels:
+        app: duck-shard
+        shard-id: shard-3
+    spec:
+      containers:
+        - name: shard
+          image: ducksharding-shard:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          env:
+            - name: ASPNETCORE_URLS
+              value: "http://+:8080"
+            - name: Shard__ShardId
+              value: "shard-3"
+            - name: Database__FileName
+              value: "shard3.db"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shard-3
+spec:
+  type: ClusterIP
+  selector:
+    app: duck-shard
+    shard-id: shard-3
+  ports:
+    - port: 8080
+      targetPort: 8080
