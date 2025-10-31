@@ -12,16 +12,15 @@ spec:
       labels:
         app: coordinator
     spec:
-      serviceAccountName: coordinator-sa
       containers:
-      - name: coordinator
-        image: ducksharding-coordinator:latest
-        imagePullPolicy: IfNotPresent
-        ports:
-        - containerPort: 8080
-        env:
-        - name: ASPNETCORE_URLS
-          value: "http://+:8080"
+        - name: coordinator
+          image: ducksharding-coordinator:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          env:
+            - name: ASPNETCORE_URLS
+              value: "http://+:8080"
 ---
 apiVersion: v1
 kind: Service
@@ -32,6 +31,6 @@ spec:
   selector:
     app: coordinator
   ports:
-  - port: 8080
-    targetPort: 8080
-    nodePort: 30000
+    - port: 8080
+      targetPort: 8080
+      nodePort: 30000

@@ -23,10 +23,6 @@
     </ItemGroup>
     
     <ItemGroup>
-    <PackageReference Include="KubernetesClient" Version="13.0.37" />
-    </ItemGroup>
-    
-    <ItemGroup>
       <_ContentIncludedByDefault Remove="Components\App.razor" />
       <_ContentIncludedByDefault Remove="Components\Layout\MainLayout.razor" />
       <_ContentIncludedByDefault Remove="Components\Layout\NavMenu.razor" />
