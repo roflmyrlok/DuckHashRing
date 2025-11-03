@@ -13,6 +13,7 @@ builder.Services.AddSwaggerGen(c =>
 builder.Services.AddHttpClient();
 builder.Services.AddSingleton<Coordinator>();
 builder.Services.AddSingleton<ShardClient>();
+builder.Services.AddSingleton<GenericTableClient>();
 
 var app = builder.Build();
 
