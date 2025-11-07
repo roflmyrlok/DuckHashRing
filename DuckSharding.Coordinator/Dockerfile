@@ -7,8 +7,12 @@ EXPOSE 8081
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 ARG BUILD_CONFIGURATION=Release
 WORKDIR /src
+
 COPY ["DuckSharding.Coordinator/DuckSharding.Coordinator.csproj", "DuckSharding.Coordinator/"]
+COPY ["DuckSharding.Shared/DuckSharding.Shared.csproj", "DuckSharding.Shared/"]
+
 RUN dotnet restore "DuckSharding.Coordinator/DuckSharding.Coordinator.csproj"
+
 COPY . .
 WORKDIR "/src/DuckSharding.Coordinator"
 RUN dotnet build "DuckSharding.Coordinator.csproj" -c $BUILD_CONFIGURATION -o /app/build

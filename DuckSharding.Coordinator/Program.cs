@@ -20,15 +20,15 @@ var coordinator = app.Services.GetRequiredService<Coordinator>();
 var configuration = app.Configuration;
 var k8sNamespace = configuration["Kubernetes:Namespace"] ?? "default";
 
-for (int i = 1; i <= 3; i++)
+for (int i = 0; i < 3; i++)
 {
 	var shardId = $"shard-{i}";
 	var shardInfo = new ShardInfo(
 		shardId, 
-		$"{shardId}.{k8sNamespace}.svc.cluster.local", 
+		$"{shardId}.shard.{k8sNamespace}.svc.cluster.local", 
 		8080);
 	coordinator.AddShard(shardInfo);
-}
+}	
 
 app.UseSwagger();
 app.UseSwaggerUI(c =>
