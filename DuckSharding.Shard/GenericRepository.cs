@@ -110,24 +110,41 @@ public class GenericRepository
     {
         var tableDef = GetTableDefinitionOrThrow(tableName);
 
-        if (!primaryKey.ContainsKey(tableDef.PartitionKey) || !primaryKey.ContainsKey(tableDef.SortKey))
-            throw new ArgumentException("Primary key must contain both partition key and sort key");
+        if (!primaryKey.ContainsKey(tableDef.PartitionKey))
+            throw new ArgumentException($"Primary key must contain partition key: {tableDef.PartitionKey}");
+    
+        if (!primaryKey.ContainsKey(tableDef.SortKey))
+            throw new ArgumentException($"Primary key must contain sort key: {tableDef.SortKey}");
 
         using var connection = new SqliteConnection(_connectionString);
+    
+        // sql build simple primary key in case partition and sort key are the same column
+        string sql;
+        object parameters;
+    
+        if (tableDef.PartitionKey == tableDef.SortKey)
+        {
+            sql = $@"
+            SELECT COUNT(1) FROM {tableName}
+            WHERE {tableDef.PartitionKey} = @KeyValue";
         
-        var sql = $@"
+            parameters = new { KeyValue = ConvertToDbValue(primaryKey[tableDef.PartitionKey]) };
+        }
+        else
+        {
+            sql = $@"
             SELECT COUNT(1) FROM {tableName}
             WHERE {tableDef.PartitionKey} = @PartitionKeyValue 
             AND {tableDef.SortKey} = @SortKeyValue";
-
-        var count = await connection.ExecuteScalarAsync<int>(
-            sql,
-            new
+        
+            parameters = new
             {
                 PartitionKeyValue = ConvertToDbValue(primaryKey[tableDef.PartitionKey]),
                 SortKeyValue = ConvertToDbValue(primaryKey[tableDef.SortKey])
-            });
+            };
+        }
 
+        var count = await connection.ExecuteScalarAsync<int>(sql, parameters);
         return count > 0;
     }
 
@@ -136,11 +153,18 @@ public class GenericRepository
         var tableDef = GetTableDefinitionOrThrow(tableName);
         ValidateRecord(tableDef, record);
 
+        // sql build simple primary key in case partition and sort key are the same column
+
         var primaryKey = new Dictionary<string, object>
         {
-            { tableDef.PartitionKey, record[tableDef.PartitionKey] },
-            { tableDef.SortKey, record[tableDef.SortKey] }
+            { tableDef.PartitionKey, record[tableDef.PartitionKey] }
         };
+        
+        if (record[tableDef.PartitionKey] == record[tableDef.SortKey])
+        {
+            primaryKey[tableDef.SortKey] = record[tableDef.SortKey];
+        }
+        
         
         if (await ExistsAsync(tableName, primaryKey))
             return false;
@@ -165,23 +189,38 @@ public class GenericRepository
     {
         var tableDef = GetTableDefinitionOrThrow(tableName);
 
-        if (!primaryKey.ContainsKey(tableDef.PartitionKey) || !primaryKey.ContainsKey(tableDef.SortKey))
-            throw new ArgumentException("Primary key must contain both partition key and sort key");
+        if (!primaryKey.ContainsKey(tableDef.PartitionKey))
+            throw new ArgumentException($"Primary key must contain partition key: {tableDef.PartitionKey}");
+    
+        if (!primaryKey.ContainsKey(tableDef.SortKey))
+            throw new ArgumentException($"Primary key must contain sort key: {tableDef.SortKey}");
 
         using var connection = new SqliteConnection(_connectionString);
-        
-        var sql = $@"
+    
+        // sql build simple primary key in case partition and sort key are the same column
+        string sql;
+        object parameters;
+    
+        if (tableDef.PartitionKey == tableDef.SortKey)
+        {
+            sql = $"SELECT * FROM {tableName} WHERE {tableDef.PartitionKey} = @KeyValue";
+            parameters = new { KeyValue = ConvertToDbValue(primaryKey[tableDef.PartitionKey]) };
+        }
+        else
+        {
+            sql = $@"
             SELECT * FROM {tableName}
             WHERE {tableDef.PartitionKey} = @PartitionKeyValue 
             AND {tableDef.SortKey} = @SortKeyValue";
-
-        var result = await connection.QuerySingleOrDefaultAsync(
-            sql,
-            new
+        
+            parameters = new
             {
                 PartitionKeyValue = ConvertToDbValue(primaryKey[tableDef.PartitionKey]),
                 SortKeyValue = ConvertToDbValue(primaryKey[tableDef.SortKey])
-            });
+            };
+        }
+
+        var result = await connection.QuerySingleOrDefaultAsync(sql, parameters);
 
         if (result == null) return null;
 
@@ -192,34 +231,40 @@ public class GenericRepository
     {
         var tableDef = GetTableDefinitionOrThrow(tableName);
         ValidateRecord(tableDef, record);
-
+        
+        // sql build simple primary key in case partition and sort key are the same column
+        
         var primaryKey = new Dictionary<string, object>
         {
-            { tableDef.PartitionKey, record[tableDef.PartitionKey] },
-            { tableDef.SortKey, record[tableDef.SortKey] }
+            { tableDef.PartitionKey, record[tableDef.PartitionKey] }
         };
-        
+    
+        if (tableDef.SortKey != tableDef.PartitionKey)
+        {
+            primaryKey[tableDef.SortKey] = record[tableDef.SortKey];
+        }
+    
         if (!await ExistsAsync(tableName, primaryKey))
             return false;
 
         using var connection = new SqliteConnection(_connectionString);
-        
+    
         var updates = string.Join(", ", record.Keys
             .Where(k => k != tableDef.PartitionKey && k != tableDef.SortKey)
             .Select(k => $"{k} = @{k}"));
 
         var sql = $@"
-            UPDATE {tableName} 
-            SET {updates}
-            WHERE {tableDef.PartitionKey} = @PartitionKeyValue 
-            AND {tableDef.SortKey} = @SortKeyValue";
+        UPDATE {tableName} 
+        SET {updates}
+        WHERE {tableDef.PartitionKey} = @PartitionKeyValue 
+        AND {tableDef.SortKey} = @SortKeyValue";
 
         var dbParams = new DynamicParameters();
         foreach (var kvp in record)
         {
             dbParams.Add(kvp.Key, ConvertToDbValue(kvp.Value));
         }
-        
+    
         if (!dbParams.ParameterNames.Contains("PartitionKeyValue"))
             dbParams.Add("PartitionKeyValue", ConvertToDbValue(record[tableDef.PartitionKey]));
         if (!dbParams.ParameterNames.Contains("SortKeyValue"))
@@ -228,29 +273,42 @@ public class GenericRepository
         var rowsAffected = await connection.ExecuteAsync(sql, dbParams);
         return rowsAffected > 0;
     }
-
     public async Task<bool> DeleteAsync(string tableName, Dictionary<string, object> primaryKey)
     {
         var tableDef = GetTableDefinitionOrThrow(tableName);
 
-        if (!primaryKey.ContainsKey(tableDef.PartitionKey) || !primaryKey.ContainsKey(tableDef.SortKey))
-            throw new ArgumentException("Primary key must contain both partition key and sort key");
+        if (!primaryKey.ContainsKey(tableDef.PartitionKey))
+            throw new ArgumentException($"Primary key must contain partition key: {tableDef.PartitionKey}");
+    
+        if (!primaryKey.ContainsKey(tableDef.SortKey))
+            throw new ArgumentException($"Primary key must contain sort key: {tableDef.SortKey}");
 
         using var connection = new SqliteConnection(_connectionString);
-        
-        var sql = $@"
+    
+        // sql build simple primary key in case partition and sort key are the same column
+        string sql;
+        object parameters;
+    
+        if (tableDef.PartitionKey == tableDef.SortKey)
+        {
+            sql = $"DELETE FROM {tableName} WHERE {tableDef.PartitionKey} = @KeyValue";
+            parameters = new { KeyValue = ConvertToDbValue(primaryKey[tableDef.PartitionKey]) };
+        }
+        else
+        {
+            sql = $@"
             DELETE FROM {tableName}
             WHERE {tableDef.PartitionKey} = @PartitionKeyValue 
             AND {tableDef.SortKey} = @SortKeyValue";
-
-        var rowsAffected = await connection.ExecuteAsync(
-            sql,
-            new
+        
+            parameters = new
             {
                 PartitionKeyValue = ConvertToDbValue(primaryKey[tableDef.PartitionKey]),
                 SortKeyValue = ConvertToDbValue(primaryKey[tableDef.SortKey])
-            });
+            };
+        }
 
+        var rowsAffected = await connection.ExecuteAsync(sql, parameters);
         return rowsAffected > 0;
     }
 
