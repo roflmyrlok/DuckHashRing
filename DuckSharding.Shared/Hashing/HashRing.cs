@@ -9,7 +9,7 @@ public class HashRing
     private readonly ConcurrentDictionary<string, ShardInfo> _shards;
     private readonly object _lock = new();
 
-    public HashRing(IHashFunction hashFunction, int virtualNodesPerShard = 150)
+    public HashRing(IHashFunction hashFunction)
     {
         _hashFunction = hashFunction ?? throw new ArgumentNullException(nameof(hashFunction));
         _ring = new SortedDictionary<uint, string>();
