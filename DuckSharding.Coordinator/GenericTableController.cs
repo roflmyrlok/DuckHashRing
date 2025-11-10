@@ -7,12 +7,12 @@ namespace DuckSharding.Coordinator;
 [Route("api/tables")]
 public class GenericTableController : ControllerBase
 {
-    private readonly Coordinator _coordinator;
+    private readonly ReplicaAwareCoordinator _replicaCoordinator;
     private readonly GenericTableClient _tableClient;
 
-    public GenericTableController(Coordinator coordinator, GenericTableClient tableClient)
+    public GenericTableController(ReplicaAwareCoordinator replicaCoordinator, GenericTableClient tableClient)
     {
-        _coordinator = coordinator;
+        _replicaCoordinator = replicaCoordinator;
         _tableClient = tableClient;
     }
 
@@ -28,40 +28,55 @@ public class GenericTableController : ControllerBase
             return BadRequest(new { error = ex.Message });
         }
 
-        var shards = _coordinator.GetAllShards();
-        if (shards.Count == 0)
+        var shardIds = _replicaCoordinator.GetAllShardIds();
+        if (shardIds.Count == 0)
             return StatusCode(503, new { error = "No shards available" });
 
-        var tasks = shards.Select(shard => _tableClient.RegisterTableAsync(shard, tableDefinition)).ToList();
+        var tasks = new List<Task<HttpResponseMessage>>();
+        var targetLeaders = new List<ShardInfo>();
+
+        foreach (var shardId in shardIds)
+        {
+            var leader = _replicaCoordinator.GetLeaderFromShard(shardId);
+            if (leader != null)
+            {
+                tasks.Add(_tableClient.RegisterTableAsync(leader, tableDefinition));
+                targetLeaders.Add(leader);
+            }
+        }
+
         var results = await Task.WhenAll(tasks);
 
-        var failedShards = results
-            .Select((result, index) => new { result, shard = shards.ElementAt(index) })
+        var failedLeaders = results
+            .Select((result, index) => new { result, leader = targetLeaders[index] })
             .Where(x => !x.result.IsSuccessStatusCode)
-            .Select(x => x.shard.ShardId)
+            .Select(x => x.leader.ShardId)
             .ToList();
 
-        if (failedShards.Any())
+        if (failedLeaders.Any())
         {
             return StatusCode(500, new
             {
-                error = "Failed to register table on some shards",
-                failedShards = failedShards
+                error = "Failed to register table on some leaders",
+                failedLeaders = failedLeaders
             });
         }
 
-        return Ok(new { message = $"Table '{tableDefinition.TableName}' registered successfully on all shards" });
+        return Ok(new { message = $"Table '{tableDefinition.TableName}' registered successfully on all shard leaders" });
     }
 
     [HttpGet("{tableName}")]
     public async Task<IActionResult> GetTableDefinition(string tableName)
     {
-        var shards = _coordinator.GetAllShards();
-        if (shards.Count == 0)
+        var shardIds = _replicaCoordinator.GetAllShardIds();
+        if (shardIds.Count == 0)
             return StatusCode(503, new { error = "No shards available" });
 
-        var shard = shards.First();
-        var tableDef = await _tableClient.GetTableDefinitionAsync(shard, tableName);
+        var replica = _replicaCoordinator.GetAnyReplicaFromShard(shardIds.First());
+        if (replica == null)
+            return StatusCode(503, new { error = "No replicas available" });
+
+        var tableDef = await _tableClient.GetTableDefinitionAsync(replica, tableName);
 
         if (tableDef == null)
             return NotFound(new { error = $"Table '{tableName}' not found" });
@@ -72,12 +87,15 @@ public class GenericTableController : ControllerBase
     [HttpGet]
     public async Task<IActionResult> GetAllTables()
     {
-        var shards = _coordinator.GetAllShards();
-        if (shards.Count == 0)
+        var shardIds = _replicaCoordinator.GetAllShardIds();
+        if (shardIds.Count == 0)
             return StatusCode(503, new { error = "No shards available" });
 
-        var shard = shards.First();
-        var tables = await _tableClient.GetAllTablesAsync(shard);
+        var replica = _replicaCoordinator.GetAnyReplicaFromShard(shardIds.First());
+        if (replica == null)
+            return StatusCode(503, new { error = "No replicas available" });
+
+        var tables = await _tableClient.GetAllTablesAsync(replica);
 
         return Ok(tables);
     }
@@ -85,12 +103,15 @@ public class GenericTableController : ControllerBase
     [HttpPost("{tableName}/exists")]
     public async Task<IActionResult> Exists(string tableName, [FromBody] Dictionary<string, object> primaryKey)
     {
-        var shards = _coordinator.GetAllShards();
-        if (shards.Count == 0)
+        var shardIds = _replicaCoordinator.GetAllShardIds();
+        if (shardIds.Count == 0)
             return StatusCode(503, new { error = "No shards available" });
 
-        var firstShard = shards.First();
-        var tableDef = await _tableClient.GetTableDefinitionAsync(firstShard, tableName);
+        var firstReplica = _replicaCoordinator.GetAnyReplicaFromShard(shardIds.First());
+        if (firstReplica == null)
+            return StatusCode(503, new { error = "No replicas available" });
+
+        var tableDef = await _tableClient.GetTableDefinitionAsync(firstReplica, tableName);
         
         if (tableDef == null)
             return NotFound(new { error = $"Table '{tableName}' not found" });
@@ -105,11 +126,11 @@ public class GenericTableController : ControllerBase
             return BadRequest(new { error = ex.Message });
         }
 
-        var shard = _coordinator.GetShardForKey(compositeKey);
-        if (shard == null)
-            return StatusCode(503, new { error = "No shards available" });
+        var replica = _replicaCoordinator.GetReplicaForRead(compositeKey);
+        if (replica == null)
+            return StatusCode(503, new { error = "No replicas available" });
 
-        var exists = await _tableClient.ExistsAsync(shard, tableName, primaryKey);
+        var exists = await _tableClient.ExistsAsync(replica, tableName, primaryKey);
 
         return exists ? Ok() : NotFound();
     }
@@ -117,12 +138,15 @@ public class GenericTableController : ControllerBase
     [HttpPost("{tableName}/create")]
     public async Task<IActionResult> Create(string tableName, [FromBody] Dictionary<string, object> record)
     {
-        var shards = _coordinator.GetAllShards();
-        if (shards.Count == 0)
+        var shardIds = _replicaCoordinator.GetAllShardIds();
+        if (shardIds.Count == 0)
             return StatusCode(503, new { error = "No shards available" });
 
-        var firstShard = shards.First();
-        var tableDef = await _tableClient.GetTableDefinitionAsync(firstShard, tableName);
+        var firstReplica = _replicaCoordinator.GetAnyReplicaFromShard(shardIds.First());
+        if (firstReplica == null)
+            return StatusCode(503, new { error = "No replicas available" });
+
+        var tableDef = await _tableClient.GetTableDefinitionAsync(firstReplica, tableName);
         
         if (tableDef == null)
             return NotFound(new { error = $"Table '{tableName}' not found" });
@@ -137,11 +161,11 @@ public class GenericTableController : ControllerBase
             return BadRequest(new { error = ex.Message });
         }
 
-        var shard = _coordinator.GetShardForKey(compositeKey);
-        if (shard == null)
-            return StatusCode(503, new { error = "No shards available" });
+        var leader = _replicaCoordinator.GetLeaderForKey(compositeKey);
+        if (leader == null)
+            return StatusCode(503, new { error = "No leader available" });
 
-        var response = await _tableClient.CreateAsync(shard, tableName, record);
+        var response = await _tableClient.CreateAsync(leader, tableName, record);
 
         if (!response.IsSuccessStatusCode)
         {
@@ -149,18 +173,21 @@ public class GenericTableController : ControllerBase
             return StatusCode((int)response.StatusCode, new { error = errorContent });
         }
 
-        return Ok(new { message = "Record created successfully", shard = shard.ShardId });
+        return Ok(new { message = "Record created successfully", shard = leader.ShardId });
     }
 
     [HttpPost("{tableName}/read")]
     public async Task<IActionResult> Read(string tableName, [FromBody] Dictionary<string, object> primaryKey)
     {
-        var shards = _coordinator.GetAllShards();
-        if (shards.Count == 0)
+        var shardIds = _replicaCoordinator.GetAllShardIds();
+        if (shardIds.Count == 0)
             return StatusCode(503, new { error = "No shards available" });
 
-        var firstShard = shards.First();
-        var tableDef = await _tableClient.GetTableDefinitionAsync(firstShard, tableName);
+        var firstReplica = _replicaCoordinator.GetAnyReplicaFromShard(shardIds.First());
+        if (firstReplica == null)
+            return StatusCode(503, new { error = "No replicas available" });
+
+        var tableDef = await _tableClient.GetTableDefinitionAsync(firstReplica, tableName);
         
         if (tableDef == null)
             return NotFound(new { error = $"Table '{tableName}' not found" });
@@ -175,11 +202,11 @@ public class GenericTableController : ControllerBase
             return BadRequest(new { error = ex.Message });
         }
 
-        var shard = _coordinator.GetShardForKey(compositeKey);
-        if (shard == null)
-            return StatusCode(503, new { error = "No shards available" });
+        var replica = _replicaCoordinator.GetReplicaForRead(compositeKey);
+        if (replica == null)
+            return StatusCode(503, new { error = "No replicas available" });
 
-        var record = await _tableClient.ReadAsync(shard, tableName, primaryKey);
+        var record = await _tableClient.ReadAsync(replica, tableName, primaryKey);
 
         if (record == null)
             return NotFound();
@@ -190,12 +217,15 @@ public class GenericTableController : ControllerBase
     [HttpPost("{tableName}/update")]
     public async Task<IActionResult> Update(string tableName, [FromBody] Dictionary<string, object> record)
     {
-        var shards = _coordinator.GetAllShards();
-        if (shards.Count == 0)
+        var shardIds = _replicaCoordinator.GetAllShardIds();
+        if (shardIds.Count == 0)
             return StatusCode(503, new { error = "No shards available" });
 
-        var firstShard = shards.First();
-        var tableDef = await _tableClient.GetTableDefinitionAsync(firstShard, tableName);
+        var firstReplica = _replicaCoordinator.GetAnyReplicaFromShard(shardIds.First());
+        if (firstReplica == null)
+            return StatusCode(503, new { error = "No replicas available" });
+
+        var tableDef = await _tableClient.GetTableDefinitionAsync(firstReplica, tableName);
         
         if (tableDef == null)
             return NotFound(new { error = $"Table '{tableName}' not found" });
@@ -210,11 +240,11 @@ public class GenericTableController : ControllerBase
             return BadRequest(new { error = ex.Message });
         }
 
-        var shard = _coordinator.GetShardForKey(compositeKey);
-        if (shard == null)
-            return StatusCode(503, new { error = "No shards available" });
+        var leader = _replicaCoordinator.GetLeaderForKey(compositeKey);
+        if (leader == null)
+            return StatusCode(503, new { error = "No leader available" });
 
-        var response = await _tableClient.UpdateAsync(shard, tableName, record);
+        var response = await _tableClient.UpdateAsync(leader, tableName, record);
 
         if (!response.IsSuccessStatusCode)
         {
@@ -222,18 +252,21 @@ public class GenericTableController : ControllerBase
             return StatusCode((int)response.StatusCode, new { error = errorContent });
         }
 
-        return Ok(new { message = "Record updated successfully", shard = shard.ShardId });
+        return Ok(new { message = "Record updated successfully", shard = leader.ShardId });
     }
 
     [HttpPost("{tableName}/delete")]
     public async Task<IActionResult> Delete(string tableName, [FromBody] Dictionary<string, object> primaryKey)
     {
-        var shards = _coordinator.GetAllShards();
-        if (shards.Count == 0)
+        var shardIds = _replicaCoordinator.GetAllShardIds();
+        if (shardIds.Count == 0)
             return StatusCode(503, new { error = "No shards available" });
 
-        var firstShard = shards.First();
-        var tableDef = await _tableClient.GetTableDefinitionAsync(firstShard, tableName);
+        var firstReplica = _replicaCoordinator.GetAnyReplicaFromShard(shardIds.First());
+        if (firstReplica == null)
+            return StatusCode(503, new { error = "No replicas available" });
+
+        var tableDef = await _tableClient.GetTableDefinitionAsync(firstReplica, tableName);
         
         if (tableDef == null)
             return NotFound(new { error = $"Table '{tableName}' not found" });
@@ -248,11 +281,11 @@ public class GenericTableController : ControllerBase
             return BadRequest(new { error = ex.Message });
         }
 
-        var shard = _coordinator.GetShardForKey(compositeKey);
-        if (shard == null)
-            return StatusCode(503, new { error = "No shards available" });
+        var leader = _replicaCoordinator.GetLeaderForKey(compositeKey);
+        if (leader == null)
+            return StatusCode(503, new { error = "No leader available" });
 
-        var deleted = await _tableClient.DeleteAsync(shard, tableName, primaryKey);
+        var deleted = await _tableClient.DeleteAsync(leader, tableName, primaryKey);
 
         if (!deleted)
             return NotFound();
