@@ -34,8 +34,8 @@ public class EventConsumer : BackgroundService
         var rabbitHost = _configuration["RabbitMQ:Host"] ?? "rabbitmq";
         var rabbitPort = int.Parse(_configuration["RabbitMQ:Port"] ?? "5672");
 
-        var exchangeName = $"shard-{shardId}-events";
-        _queueName = $"shard-{shardId}-{replicaId}";
+        var exchangeName = $"{shardId}-events";
+        _queueName = $"{shardId}-{replicaId}";
 
         var factory = new ConnectionFactory
         {

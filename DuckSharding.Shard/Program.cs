@@ -30,5 +30,10 @@ else
 
 var app = builder.Build();
 
+if (isLeader)
+{
+	app.Services.GetRequiredService<EventPublisher>();
+}
+
 app.MapControllers();
 app.Run();

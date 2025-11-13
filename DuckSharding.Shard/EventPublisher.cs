@@ -31,7 +31,7 @@ public class EventPublisher : IAsyncDisposable
         var rabbitHost = configuration["RabbitMQ:Host"] ?? "rabbitmq";
         var rabbitPort = int.Parse(configuration["RabbitMQ:Port"] ?? "5672");
 
-        _exchangeName = $"shard-{shardId}-events";
+        _exchangeName = $"{shardId}-events";
 
         var factory = new ConnectionFactory
         {
