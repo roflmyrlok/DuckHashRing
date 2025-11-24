@@ -173,7 +173,12 @@ public class GenericTableController : ControllerBase
             return StatusCode((int)response.StatusCode, new { error = errorContent });
         }
 
-        return Ok(new { message = "Record created successfully", shard = leader.ShardId });
+        return Ok(new { 
+            message = "Record created successfully", 
+            shard = leader.ShardId,
+            replica = leader.ShardId,
+            isLeader = leader.IsLeader
+        });
     }
 
     [HttpPost("{tableName}/read")]
@@ -211,7 +216,19 @@ public class GenericTableController : ControllerBase
         if (record == null)
             return NotFound();
 
-        return Ok(record);
+        // Add metadata about which replica served the request
+        var response = new Dictionary<string, object>
+        {
+            { "data", record },
+            { "metadata", new {
+                replica = replica.ShardId,
+                replicaHost = replica.Host,
+                isLeader = replica.IsLeader,
+                shard = replica.ShardId.Split('-')[0] + "-" + replica.ShardId.Split('-')[1]
+            }}
+        };
+
+        return Ok(response);
     }
 
     [HttpPost("{tableName}/update")]
@@ -252,7 +269,12 @@ public class GenericTableController : ControllerBase
             return StatusCode((int)response.StatusCode, new { error = errorContent });
         }
 
-        return Ok(new { message = "Record updated successfully", shard = leader.ShardId });
+        return Ok(new { 
+            message = "Record updated successfully", 
+            shard = leader.ShardId,
+            replica = leader.ShardId,
+            isLeader = leader.IsLeader
+        });
     }
 
     [HttpPost("{tableName}/delete")]
@@ -290,6 +312,11 @@ public class GenericTableController : ControllerBase
         if (!deleted)
             return NotFound();
 
-        return Ok(new { message = "Record deleted successfully" });
+        return Ok(new { 
+            message = "Record deleted successfully",
+            shard = leader.ShardId,
+            replica = leader.ShardId,
+            isLeader = leader.IsLeader
+        });
     }
 }
