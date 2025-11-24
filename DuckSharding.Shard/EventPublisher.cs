@@ -10,19 +10,19 @@ public class EventPublisher : IAsyncDisposable
     private IConnection? _connection;
     private IChannel? _channel;
     private string? _exchangeName;
-    private long _sequenceNumber;
+    private readonly ReplicationLogRepository _replicationLog;
     private readonly object _lock = new();
 
-    public static async Task<EventPublisher> CreateAsync(IConfiguration configuration)
+    public static async Task<EventPublisher> CreateAsync(IConfiguration configuration, ReplicationLogRepository replicationLog)
     {
-        var publisher = new EventPublisher();
+        var publisher = new EventPublisher(replicationLog);
         await publisher.InitializeAsync(configuration);
         return publisher;
     }
 
-    private EventPublisher()
+    private EventPublisher(ReplicationLogRepository replicationLog)
     {
-        _sequenceNumber = 0;
+        _replicationLog = replicationLog;
     }
 
     private async Task InitializeAsync(IConfiguration configuration)
@@ -56,7 +56,12 @@ public class EventPublisher : IAsyncDisposable
 
         lock (_lock)
         {
-            replicationEvent.SequenceNumber = ++_sequenceNumber;
+            // Get next sequence number from persistent storage
+            var latestSequence = _replicationLog.GetLatestSequenceNumber();
+            replicationEvent.SequenceNumber = latestSequence + 1;
+            
+            // Persist the event before publishing
+            _replicationLog.AppendEvent(replicationEvent);
         }
 
         var json = JsonSerializer.Serialize(replicationEvent);
@@ -73,6 +78,11 @@ public class EventPublisher : IAsyncDisposable
             mandatory: false,
             basicProperties: properties,
             body: body);
+    }
+
+    public long GetLatestSequenceNumber()
+    {
+        return _replicationLog.GetLatestSequenceNumber();
     }
 
     public async ValueTask DisposeAsync()
