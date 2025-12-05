@@ -56,11 +56,9 @@ public class EventPublisher : IAsyncDisposable
 
         lock (_lock)
         {
-            // Get next sequence number from persistent storage
             var latestSequence = _replicationLog.GetLatestSequenceNumber();
             replicationEvent.SequenceNumber = latestSequence + 1;
-            
-            // Persist the event before publishing
+
             _replicationLog.AppendEvent(replicationEvent);
         }
 

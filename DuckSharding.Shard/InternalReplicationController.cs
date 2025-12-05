@@ -1,4 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
+using DuckSharding.Shared.Models;
+
 namespace DuckSharding.Shard;
 
 [ApiController]

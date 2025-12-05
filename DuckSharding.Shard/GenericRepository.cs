@@ -12,12 +12,14 @@ public class GenericRepository
     private readonly Dictionary<string, TableDefinition> _tables = new();
     private readonly object _lock = new();
     private readonly EventPublisher? _eventPublisher;
+    private readonly bool _isLeader;
 
     public GenericRepository(IConfiguration configuration, EventPublisher? eventPublisher = null)
     {
         var dbFileName = configuration["Database:FileName"] ?? "shard.db";
         _connectionString = $"Data Source={dbFileName}";
         _eventPublisher = eventPublisher;
+        _isLeader = eventPublisher != null;
         InitializeMetadataTable();
         LoadTableDefinitions();
     }
@@ -90,7 +92,7 @@ public class GenericRepository
                 transaction.Commit();
                 _tables[tableDefinition.TableName] = tableDefinition;
 
-                if (_eventPublisher != null)
+                if (_isLeader && _eventPublisher != null)
                 {
                     var eventData = new Dictionary<string, object>
                     {
@@ -103,6 +105,50 @@ public class GenericRepository
                     var replicationEvent = new ReplicationEvent(0, tableDefinition.TableName, OperationType.TableRegistration, eventData);
                     _eventPublisher.PublishEventAsync(replicationEvent).Wait();
                 }
+            }
+            catch
+            {
+                transaction.Rollback();
+                throw;
+            }
+        }
+    }
+    
+    public void ApplyTableRegistration(TableDefinition tableDefinition)
+    {
+        tableDefinition.Validate();
+
+        lock (_lock)
+        {
+            if (_tables.ContainsKey(tableDefinition.TableName))
+            {
+                return;
+            }
+
+            using var connection = new SqliteConnection(_connectionString);
+            connection.Open();
+
+            using var transaction = connection.BeginTransaction();
+            try
+            {
+                var columnsJson = JsonSerializer.Serialize(tableDefinition.Columns);
+                var insertMetadataSql = @"
+                    INSERT INTO __TableMetadata (TableName, PartitionKey, SortKey, ColumnsJson)
+                    VALUES (@TableName, @PartitionKey, @SortKey, @ColumnsJson)";
+
+                connection.Execute(insertMetadataSql, new
+                {
+                    TableName = tableDefinition.TableName,
+                    PartitionKey = tableDefinition.PartitionKey,
+                    SortKey = tableDefinition.SortKey,
+                    ColumnsJson = columnsJson
+                }, transaction);
+
+                var createTableSql = GenerateCreateTableSql(tableDefinition);
+                connection.Execute(createTableSql, transaction: transaction);
+
+                transaction.Commit();
+                _tables[tableDefinition.TableName] = tableDefinition;
             }
             catch
             {
@@ -191,13 +237,47 @@ public class GenericRepository
         }
 
         await connection.ExecuteAsync(sql, dbParams);
-
-        if (_eventPublisher != null)
+        
+        if (_isLeader && _eventPublisher != null)
         {
             var replicationEvent = new ReplicationEvent(0, tableName, OperationType.Create, record);
             await _eventPublisher.PublishEventAsync(replicationEvent);
         }
 
+        return true;
+    }
+    
+    public async Task<bool> ApplyCreateAsync(string tableName, Dictionary<string, object> record)
+    {
+        var tableDef = GetTableDefinitionOrThrow(tableName);
+        ValidateRecord(tableDef, record);
+
+        var primaryKey = new Dictionary<string, object>
+        {
+            { tableDef.PartitionKey, record[tableDef.PartitionKey] }
+        };
+        
+        if (tableDef.PartitionKey != tableDef.SortKey)
+        {
+            primaryKey[tableDef.SortKey] = record[tableDef.SortKey];
+        }
+        
+        if (await ExistsAsync(tableName, primaryKey))
+            return false;
+
+        using var connection = new SqliteConnection(_connectionString);
+        var columns = string.Join(", ", record.Keys);
+        var parameters = string.Join(", ", record.Keys.Select(k => $"@{k}"));
+        
+        var sql = $"INSERT INTO {tableName} ({columns}) VALUES ({parameters})";
+        
+        var dbParams = new DynamicParameters();
+        foreach (var kvp in record)
+        {
+            dbParams.Add(kvp.Key, ConvertToDbValue(kvp.Value));
+        }
+
+        await connection.ExecuteAsync(sql, dbParams);
         return true;
     }
 
@@ -284,13 +364,58 @@ public class GenericRepository
             dbParams.Add("SortKeyValue", ConvertToDbValue(record[tableDef.SortKey]));
 
         var rowsAffected = await connection.ExecuteAsync(sql, dbParams);
-
-        if (rowsAffected > 0 && _eventPublisher != null)
+        
+        if (rowsAffected > 0 && _isLeader && _eventPublisher != null)
         {
             var replicationEvent = new ReplicationEvent(0, tableName, OperationType.Update, record);
             await _eventPublisher.PublishEventAsync(replicationEvent);
         }
 
+        return rowsAffected > 0;
+    }
+
+    public async Task<bool> ApplyUpdateAsync(string tableName, Dictionary<string, object> record)
+    {
+        var tableDef = GetTableDefinitionOrThrow(tableName);
+        ValidateRecord(tableDef, record);
+        
+        var primaryKey = new Dictionary<string, object>
+        {
+            { tableDef.PartitionKey, record[tableDef.PartitionKey] }
+        };
+    
+        if (tableDef.SortKey != tableDef.PartitionKey)
+        {
+            primaryKey[tableDef.SortKey] = record[tableDef.SortKey];
+        }
+    
+        if (!await ExistsAsync(tableName, primaryKey))
+            return false;
+
+        using var connection = new SqliteConnection(_connectionString);
+    
+        var updates = string.Join(", ", record.Keys
+            .Where(k => k != tableDef.PartitionKey && k != tableDef.SortKey)
+            .Select(k => $"{k} = @{k}"));
+
+        var sql = $@"
+            UPDATE {tableName} 
+            SET {updates}
+            WHERE {tableDef.PartitionKey} = @PartitionKeyValue 
+            AND {tableDef.SortKey} = @SortKeyValue";
+
+        var dbParams = new DynamicParameters();
+        foreach (var kvp in record)
+        {
+            dbParams.Add(kvp.Key, ConvertToDbValue(kvp.Value));
+        }
+    
+        if (!dbParams.ParameterNames.Contains("PartitionKeyValue"))
+            dbParams.Add("PartitionKeyValue", ConvertToDbValue(record[tableDef.PartitionKey]));
+        if (!dbParams.ParameterNames.Contains("SortKeyValue"))
+            dbParams.Add("SortKeyValue", ConvertToDbValue(record[tableDef.SortKey]));
+
+        var rowsAffected = await connection.ExecuteAsync(sql, dbParams);
         return rowsAffected > 0;
     }
 
@@ -329,13 +454,51 @@ public class GenericRepository
         }
 
         var rowsAffected = await connection.ExecuteAsync(sql, parameters);
-
-        if (rowsAffected > 0 && _eventPublisher != null)
+        
+        if (rowsAffected > 0 && _isLeader && _eventPublisher != null)
         {
             var replicationEvent = new ReplicationEvent(0, tableName, OperationType.Delete, primaryKey);
             await _eventPublisher.PublishEventAsync(replicationEvent);
         }
 
+        return rowsAffected > 0;
+    }
+
+    public async Task<bool> ApplyDeleteAsync(string tableName, Dictionary<string, object> primaryKey)
+    {
+        var tableDef = GetTableDefinitionOrThrow(tableName);
+
+        if (!primaryKey.ContainsKey(tableDef.PartitionKey))
+            throw new ArgumentException($"Primary key must contain partition key: {tableDef.PartitionKey}");
+    
+        if (!primaryKey.ContainsKey(tableDef.SortKey))
+            throw new ArgumentException($"Primary key must contain sort key: {tableDef.SortKey}");
+
+        using var connection = new SqliteConnection(_connectionString);
+    
+        string sql;
+        object parameters;
+    
+        if (tableDef.PartitionKey == tableDef.SortKey)
+        {
+            sql = $"DELETE FROM {tableName} WHERE {tableDef.PartitionKey} = @KeyValue";
+            parameters = new { KeyValue = ConvertToDbValue(primaryKey[tableDef.PartitionKey]) };
+        }
+        else
+        {
+            sql = $@"
+                DELETE FROM {tableName}
+                WHERE {tableDef.PartitionKey} = @PartitionKeyValue 
+                AND {tableDef.SortKey} = @SortKeyValue";
+        
+            parameters = new
+            {
+                PartitionKeyValue = ConvertToDbValue(primaryKey[tableDef.PartitionKey]),
+                SortKeyValue = ConvertToDbValue(primaryKey[tableDef.SortKey])
+            };
+        }
+
+        var rowsAffected = await connection.ExecuteAsync(sql, parameters);
         return rowsAffected > 0;
     }
 

@@ -44,8 +44,7 @@ public class EventConsumer : BackgroundService
 
         var exchangeName = $"{shardId}-events";
         _queueName = $"{shardId}-{replicaId}";
-
-        // Perform catchup before consuming new events
+        
         await CatchupWithLeaderAsync(stoppingToken);
 
         var factory = new ConnectionFactory
@@ -151,8 +150,7 @@ public class EventConsumer : BackgroundService
             }
 
             _logger.LogInformation($"Catchup needed: current={currentSequence}, leader={leaderSequence}, gap={leaderSequence - currentSequence}");
-
-            // Fetch and apply missing events
+            
             var catchupResponse = await client.GetAsync(
                 $"{_leaderBaseUrl}/internal/replication/events?fromSequence={currentSequence}",
                 cancellationToken);
@@ -192,23 +190,21 @@ public class EventConsumer : BackgroundService
     private async Task ApplyEventAsync(ReplicationEvent replicationEvent, bool isCatchup = false)
     {
         var currentSequence = _replicationLog.GetLatestSequenceNumber();
-
-        // Check for duplicate
+        
         if (replicationEvent.SequenceNumber <= currentSequence)
         {
             _logger.LogWarning($"Skipping duplicate/old sequence: {replicationEvent.SequenceNumber} (current: {currentSequence})");
             return;
         }
 
-        // Check for gap
+
         var expectedSequence = currentSequence + 1;
         if (replicationEvent.SequenceNumber > expectedSequence)
         {
             _logger.LogWarning($"Sequence gap detected: expected {expectedSequence}, got {replicationEvent.SequenceNumber}");
             
             if (!isCatchup)
-            {
-                // In normal operation, log the gap but continue (catchup will handle it on restart)
+            { 
                 _logger.LogWarning("Gap will be filled on next catchup cycle");
             }
         }
@@ -222,28 +218,26 @@ public class EventConsumer : BackgroundService
                         JsonSerializer.Serialize(replicationEvent.Data));
                     if (tableDef != null)
                     {
-                        _repository.RegisterTable(tableDef);
+                        _repository.ApplyTableRegistration(tableDef);
                         _logger.LogInformation($"Applied TableRegistration: {tableDef.TableName} (seq: {replicationEvent.SequenceNumber})");
                     }
                     break;
 
                 case OperationType.Create:
-                    await _repository.CreateAsync(replicationEvent.TableName, replicationEvent.Data);
+                    await _repository.ApplyCreateAsync(replicationEvent.TableName, replicationEvent.Data);
                     _logger.LogInformation($"Applied Create: {replicationEvent.TableName} (seq: {replicationEvent.SequenceNumber})");
                     break;
 
                 case OperationType.Update:
-                    await _repository.UpdateAsync(replicationEvent.TableName, replicationEvent.Data);
+                    await _repository.ApplyUpdateAsync(replicationEvent.TableName, replicationEvent.Data);
                     _logger.LogInformation($"Applied Update: {replicationEvent.TableName} (seq: {replicationEvent.SequenceNumber})");
                     break;
 
                 case OperationType.Delete:
-                    await _repository.DeleteAsync(replicationEvent.TableName, replicationEvent.Data);
+                    await _repository.ApplyDeleteAsync(replicationEvent.TableName, replicationEvent.Data);
                     _logger.LogInformation($"Applied Delete: {replicationEvent.TableName} (seq: {replicationEvent.SequenceNumber})");
                     break;
             }
-
-            // Persist the applied event
             _replicationLog.AppendEvent(replicationEvent);
         }
         catch (Exception ex)

@@ -6,8 +6,6 @@ builder.Services.AddControllers();
 builder.Services.AddHttpClient();
 
 var isLeader = builder.Configuration.GetValue<bool>("Shard:IsLeader", false);
-
-// ReplicationLogRepository is always needed for both leaders and followers
 builder.Services.AddSingleton<ReplicationLogRepository>();
 
 if (isLeader)

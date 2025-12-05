@@ -32,6 +32,7 @@ public class ReplicationLogRepository
             )";
 
         connection.Execute(createLogTableSql);
+
         var createIndexSql = @"
             CREATE INDEX IF NOT EXISTS idx_replication_log_sequence 
             ON __ReplicationLog(SequenceNumber)";
