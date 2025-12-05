@@ -1,3 +1,4 @@
+// DuckSharding.Coordinator/GenericTableClient.cs
 using DuckSharding.Shared.Models;
 using System.Text;
 using System.Text.Json;

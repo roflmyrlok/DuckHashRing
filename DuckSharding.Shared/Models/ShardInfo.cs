@@ -6,17 +6,19 @@ public class ShardInfo
 	public string Host { get; set; } = string.Empty;
 	public int Port { get; set; }
 	public bool IsHealthy { get; set; } = true;
+	public bool IsLeader { get; set; } = false;
 
 	public ShardInfo()
 	{
 	}
 
-	public ShardInfo(string shardId, string host, int port, bool isHealthy = true)
+	public ShardInfo(string shardId, string host, int port, bool isHealthy = true, bool isLeader = false)
 	{
 		ShardId = shardId;
 		Host = host;
 		Port = port;
 		IsHealthy = isHealthy;
+		IsLeader = isLeader;
 	}
 
 	public string GetBaseUrl()
@@ -26,6 +28,7 @@ public class ShardInfo
 
 	public override string ToString()
 	{
-		return $"{ShardId} ({Host}:{Port}) - {(IsHealthy ? "Healthy" : "Unhealthy")}";
+		var role = IsLeader ? "Leader" : "Follower";
+		return $"{ShardId} ({Host}:{Port}) - {role} - {(IsHealthy ? "Healthy" : "Unhealthy")}";
 	}
 }

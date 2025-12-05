@@ -8,10 +8,12 @@ spec:
   selector:
     matchLabels:
       app: duck-shard
+      role: leader
   template:
     metadata:
       labels:
         app: duck-shard
+        role: leader
     spec:
       containers:
         - name: shard
@@ -23,10 +25,20 @@ spec:
             - name: ASPNETCORE_URLS
               value: "http://+:8080"
             - name: Database__FileName
-              value: "/data/shard.db"  # Changed back to /data
+              value: "/data/shard.db"
+            - name: Shard__ShardId
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: Shard__IsLeader
+              value: "true"
+            - name: RabbitMQ__Host
+              value: "rabbitmq"
+            - name: RabbitMQ__Port
+              value: "5672"
           volumeMounts:
             - name: data
-              mountPath: /data  # Changed back to /data (not /app!)
+              mountPath: /data
   volumeClaimTemplates:
     - metadata:
         name: data
@@ -44,6 +56,91 @@ spec:
   clusterIP: None
   selector:
     app: duck-shard
+    role: leader
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: follower
+spec:
+  serviceName: follower
+  replicas: 9
+  selector:
+    matchLabels:
+      app: duck-shard
+      role: follower
+  template:
+    metadata:
+      labels:
+        app: duck-shard
+        role: follower
+    spec:
+      initContainers:
+        - name: shard-mapper
+          image: busybox:1.28
+          command:
+            - sh
+            - -c
+            - |
+              ORDINAL=${HOSTNAME##*-}
+              SHARD_NUM=$((ORDINAL / 3))
+              SHARD_ID="shard-${SHARD_NUM}"
+              FOLLOWER_NUM=$((ORDINAL % 3))
+              FOLLOWER_ID="follower-${FOLLOWER_NUM}"
+              echo "SHARD_ID=${SHARD_ID}" > /config/shard-config
+              echo "FOLLOWER_ID=${FOLLOWER_ID}" >> /config/shard-config
+              cat /config/shard-config
+          volumeMounts:
+            - name: config
+              mountPath: /config
+      containers:
+        - name: shard-follower
+          image: ducksharding-shard:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          command:
+            - sh
+            - -c
+            - |
+              . /config/shard-config
+              export Shard__ShardId=$SHARD_ID
+              export Shard__ReplicaId=$FOLLOWER_ID
+              exec dotnet DuckSharding.Shard.dll
+          env:
+            - name: ASPNETCORE_URLS
+              value: "http://+:8080"
+            - name: Database__FileName
+              value: "/data/shard.db"
+            - name: Shard__IsLeader
+              value: "false"
+            - name: RabbitMQ__Host
+              value: "rabbitmq"
+            - name: RabbitMQ__Port
+              value: "5672"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: config
+              mountPath: /config
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: config
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: follower
+spec:
+  clusterIP: None
+  selector:
+    app: duck-shard
+    role: follower
   ports:
     - port: 8080
       targetPort: 8080
