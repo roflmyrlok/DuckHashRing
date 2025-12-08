@@ -15,8 +15,11 @@ public class EventConsumer : BackgroundService
     private readonly ILogger<EventConsumer> _logger;
     private readonly IConfiguration _configuration;
     private string? _queueName;
+    private string? _exchangeName;
     private readonly IHttpClientFactory _httpClientFactory;
     private string? _leaderBaseUrl;
+    private string? _replicaId;
+    private string? _baseShardId;
 
     public EventConsumer(
         IConfiguration configuration,
@@ -35,15 +38,22 @@ public class EventConsumer : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var shardId = _configuration["Shard:ShardId"] ?? "shard-0";
-        var replicaId = _configuration["Shard:ReplicaId"] ?? "follower-1";
+        _replicaId = _configuration["Shard:ReplicaId"] ?? "follower-0";
         var rabbitHost = _configuration["RabbitMQ:Host"] ?? "rabbitmq";
         var rabbitPort = int.Parse(_configuration["RabbitMQ:Port"] ?? "5672");
         var k8sNamespace = _configuration["Kubernetes:Namespace"] ?? "default";
+        
+        _baseShardId = shardId.Contains("-leader") || shardId.Contains("-follower") 
+            ? shardId.Split(new[] { "-leader", "-follower" }, StringSplitOptions.None)[0]
+            : shardId;
 
-        _leaderBaseUrl = $"http://{shardId}.shard.{k8sNamespace}.svc.cluster.local:8080";
-
-        var exchangeName = $"{shardId}-events";
-        _queueName = $"{shardId}-{replicaId}";
+        _leaderBaseUrl = $"http://{_baseShardId}.shard.{k8sNamespace}.svc.cluster.local:8080";
+        _exchangeName = $"{_baseShardId}-replication";
+        
+        _queueName = $"{_baseShardId}-{_replicaId}";
+        
+        _logger.LogInformation($"EventConsumer starting for replica {_replicaId} on shard {_baseShardId}");
+        _logger.LogInformation($"Binding to exchange: {_exchangeName}, queue: {_queueName}");
         
         await CatchupWithLeaderAsync(stoppingToken);
 
@@ -56,6 +66,16 @@ public class EventConsumer : BackgroundService
         _connection = await factory.CreateConnectionAsync(stoppingToken);
         _channel = await _connection.CreateChannelAsync(cancellationToken: stoppingToken);
 
+        // Declare the shared fan-out exchange (idempotent)
+        await _channel.ExchangeDeclareAsync(
+            exchange: _exchangeName,
+            type: ExchangeType.Fanout,
+            durable: true,
+            autoDelete: false,
+            arguments: null,
+            cancellationToken: stoppingToken);
+
+        // Declare this replica's exclusive queue
         await _channel.QueueDeclareAsync(
             queue: _queueName,
             durable: true,
@@ -64,12 +84,15 @@ public class EventConsumer : BackgroundService
             arguments: null,
             cancellationToken: stoppingToken);
 
+        // Bind the queue to the fan-out exchange
         await _channel.QueueBindAsync(
             queue: _queueName,
-            exchange: exchangeName,
+            exchange: _exchangeName,
             routingKey: string.Empty,
             arguments: null,
             cancellationToken: stoppingToken);
+
+        _logger.LogInformation($"Queue {_queueName} bound to exchange {_exchangeName}");
 
         var consumer = new AsyncEventingBasicConsumer(_channel);
         
@@ -102,12 +125,15 @@ public class EventConsumer : BackgroundService
             consumer: consumer,
             cancellationToken: stoppingToken);
 
+        _logger.LogInformation($"EventConsumer started consuming from queue: {_queueName}");
+
         try
         {
             await Task.Delay(Timeout.Infinite, stoppingToken);
         }
         catch (OperationCanceledException)
         {
+            _logger.LogInformation("EventConsumer stopping...");
         }
     }
 
@@ -197,7 +223,6 @@ public class EventConsumer : BackgroundService
             return;
         }
 
-
         var expectedSequence = currentSequence + 1;
         if (replicationEvent.SequenceNumber > expectedSequence)
         {
@@ -249,6 +274,8 @@ public class EventConsumer : BackgroundService
 
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
+        _logger.LogInformation("EventConsumer stopping...");
+        
         if (_channel != null)
         {
             await _channel.CloseAsync(cancellationToken);

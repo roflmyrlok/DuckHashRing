@@ -14,7 +14,8 @@ if (isLeader)
 	{
 		var config = sp.GetRequiredService<IConfiguration>();
 		var replicationLog = sp.GetRequiredService<ReplicationLogRepository>();
-		return EventPublisher.CreateAsync(config, replicationLog).GetAwaiter().GetResult();
+		var logger = sp.GetRequiredService<ILogger<EventPublisher>>();
+		return EventPublisher.CreateAsync(config, replicationLog, logger).GetAwaiter().GetResult();
 	});
     
 	builder.Services.AddSingleton<GenericRepository>(sp =>
