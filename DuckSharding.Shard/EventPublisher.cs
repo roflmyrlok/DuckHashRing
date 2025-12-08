@@ -11,18 +11,23 @@ public class EventPublisher : IAsyncDisposable
     private IChannel? _channel;
     private string? _exchangeName;
     private readonly ReplicationLogRepository _replicationLog;
+    private readonly ILogger<EventPublisher> _logger;
     private readonly object _lock = new();
 
-    public static async Task<EventPublisher> CreateAsync(IConfiguration configuration, ReplicationLogRepository replicationLog)
+    public static async Task<EventPublisher> CreateAsync(
+        IConfiguration configuration, 
+        ReplicationLogRepository replicationLog,
+        ILogger<EventPublisher> logger)
     {
-        var publisher = new EventPublisher(replicationLog);
+        var publisher = new EventPublisher(replicationLog, logger);
         await publisher.InitializeAsync(configuration);
         return publisher;
     }
 
-    private EventPublisher(ReplicationLogRepository replicationLog)
+    private EventPublisher(ReplicationLogRepository replicationLog, ILogger<EventPublisher> logger)
     {
         _replicationLog = replicationLog;
+        _logger = logger;
     }
 
     private async Task InitializeAsync(IConfiguration configuration)
@@ -30,8 +35,14 @@ public class EventPublisher : IAsyncDisposable
         var shardId = configuration["Shard:ShardId"] ?? "shard-0";
         var rabbitHost = configuration["RabbitMQ:Host"] ?? "rabbitmq";
         var rabbitPort = int.Parse(configuration["RabbitMQ:Port"] ?? "5672");
+        
+        var baseShardId = shardId.Contains("-leader") || shardId.Contains("-follower") 
+            ? shardId.Split(new[] { "-leader", "-follower" }, StringSplitOptions.None)[0]
+            : shardId;
 
-        _exchangeName = $"{shardId}-events";
+        _exchangeName = $"{baseShardId}-replication";
+
+        _logger.LogInformation($"Initializing EventPublisher for exchange: {_exchangeName}");
 
         var factory = new ConnectionFactory
         {
@@ -41,24 +52,25 @@ public class EventPublisher : IAsyncDisposable
 
         _connection = await factory.CreateConnectionAsync();
         _channel = await _connection.CreateChannelAsync();
-
+        
         await _channel.ExchangeDeclareAsync(
             exchange: _exchangeName,
             type: ExchangeType.Fanout,
             durable: true,
             autoDelete: false);
+
+        _logger.LogInformation($"EventPublisher initialized for shard: {baseShardId}");
     }
 
     public async Task PublishEventAsync(ReplicationEvent replicationEvent)
     {
         if (_channel == null || _exchangeName == null)
             throw new InvalidOperationException("EventPublisher not initialized");
-
+        
         lock (_lock)
         {
             var latestSequence = _replicationLog.GetLatestSequenceNumber();
             replicationEvent.SequenceNumber = latestSequence + 1;
-
             _replicationLog.AppendEvent(replicationEvent);
         }
 
@@ -67,7 +79,8 @@ public class EventPublisher : IAsyncDisposable
 
         var properties = new BasicProperties
         {
-            Persistent = true
+            Persistent = true,
+            DeliveryMode = DeliveryModes.Persistent
         };
 
         await _channel.BasicPublishAsync(
@@ -76,6 +89,8 @@ public class EventPublisher : IAsyncDisposable
             mandatory: false,
             basicProperties: properties,
             body: body);
+
+        _logger.LogDebug($"Published event seq={replicationEvent.SequenceNumber} to {_exchangeName}");
     }
 
     public long GetLatestSequenceNumber()
