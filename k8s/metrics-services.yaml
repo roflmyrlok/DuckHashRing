@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: shard-metrics
+  labels:
+    app: duck-shard
+    role: leader
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    app: duck-shard
+    role: leader
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: metrics
+  publishNotReadyAddresses: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: follower-metrics
+  labels:
+    app: duck-shard
+    role: follower
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    app: duck-shard
+    role: follower
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: metrics
+  publishNotReadyAddresses: true

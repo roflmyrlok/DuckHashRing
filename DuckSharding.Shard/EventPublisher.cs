@@ -2,6 +2,7 @@ using RabbitMQ.Client;
 using System.Text;
 using System.Text.Json;
 using DuckSharding.Shared.Models;
+using DuckSharding.Shared.Metrics;
 
 namespace DuckSharding.Shard;
 
@@ -13,6 +14,7 @@ public class EventPublisher : IAsyncDisposable
     private readonly ReplicationLogRepository _replicationLog;
     private readonly ILogger<EventPublisher> _logger;
     private readonly object _lock = new();
+    private string? _baseShardId;
 
     public static async Task<EventPublisher> CreateAsync(
         IConfiguration configuration, 
@@ -36,13 +38,13 @@ public class EventPublisher : IAsyncDisposable
         var rabbitHost = configuration["RabbitMQ:Host"] ?? "rabbitmq";
         var rabbitPort = int.Parse(configuration["RabbitMQ:Port"] ?? "5672");
         
-        var baseShardId = shardId.Contains("-leader") || shardId.Contains("-follower") 
+        _baseShardId = shardId.Contains("-leader") || shardId.Contains("-follower") 
             ? shardId.Split(new[] { "-leader", "-follower" }, StringSplitOptions.None)[0]
             : shardId;
 
-        _exchangeName = $"{baseShardId}-replication";
+        _exchangeName = $"{_baseShardId}-replication";
 
-        _logger.LogInformation($"Initializing EventPublisher for exchange: {_exchangeName}");
+        _logger.LogInformation("Initializing EventPublisher for exchange: {ExchangeName}", _exchangeName);
 
         var factory = new ConnectionFactory
         {
@@ -59,7 +61,13 @@ public class EventPublisher : IAsyncDisposable
             durable: true,
             autoDelete: false);
 
-        _logger.LogInformation($"EventPublisher initialized for shard: {baseShardId}");
+        // Update metrics with current sequence
+        var currentSequence = _replicationLog.GetLatestSequenceNumber();
+        MetricsRegistry.ShardReplicationSequenceNumber
+            .WithLabels(_baseShardId, "leader", "current")
+            .Set(currentSequence);
+
+        _logger.LogInformation("EventPublisher initialized for shard: {ShardId}", _baseShardId);
     }
 
     public async Task PublishEventAsync(ReplicationEvent replicationEvent)
@@ -72,6 +80,11 @@ public class EventPublisher : IAsyncDisposable
             var latestSequence = _replicationLog.GetLatestSequenceNumber();
             replicationEvent.SequenceNumber = latestSequence + 1;
             _replicationLog.AppendEvent(replicationEvent);
+            
+            // Update metrics
+            MetricsRegistry.ShardReplicationSequenceNumber
+                .WithLabels(_baseShardId ?? "unknown", "leader", "current")
+                .Set(replicationEvent.SequenceNumber);
         }
 
         var json = JsonSerializer.Serialize(replicationEvent);
@@ -90,7 +103,12 @@ public class EventPublisher : IAsyncDisposable
             basicProperties: properties,
             body: body);
 
-        _logger.LogDebug($"Published event seq={replicationEvent.SequenceNumber} to {_exchangeName}");
+        MetricsRegistry.RabbitMqMessagesPublished
+            .WithLabels(_exchangeName, _baseShardId ?? "unknown")
+            .Inc();
+
+        _logger.LogDebug("Published event seq={Sequence} to {Exchange}", 
+            replicationEvent.SequenceNumber, _exchangeName);
     }
 
     public long GetLatestSequenceNumber()

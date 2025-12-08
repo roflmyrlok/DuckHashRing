@@ -3,6 +3,7 @@ using RabbitMQ.Client.Events;
 using System.Text;
 using System.Text.Json;
 using DuckSharding.Shared.Models;
+using DuckSharding.Shared.Metrics;
 
 namespace DuckSharding.Shard;
 
@@ -20,6 +21,7 @@ public class EventConsumer : BackgroundService
     private string? _leaderBaseUrl;
     private string? _replicaId;
     private string? _baseShardId;
+    private DateTime _lastEventTime = DateTime.UtcNow;
 
     public EventConsumer(
         IConfiguration configuration,
@@ -52,8 +54,11 @@ public class EventConsumer : BackgroundService
         
         _queueName = $"{_baseShardId}-{_replicaId}";
         
-        _logger.LogInformation($"EventConsumer starting for replica {_replicaId} on shard {_baseShardId}");
-        _logger.LogInformation($"Binding to exchange: {_exchangeName}, queue: {_queueName}");
+        _logger.LogInformation("EventConsumer starting for replica {ReplicaId} on shard {ShardId}", _replicaId, _baseShardId);
+        _logger.LogInformation("Binding to exchange: {ExchangeName}, queue: {QueueName}", _exchangeName, _queueName);
+        
+        // Start replication lag monitoring
+        _ = MonitorReplicationLagAsync(stoppingToken);
         
         await CatchupWithLeaderAsync(stoppingToken);
 
@@ -66,7 +71,6 @@ public class EventConsumer : BackgroundService
         _connection = await factory.CreateConnectionAsync(stoppingToken);
         _channel = await _connection.CreateChannelAsync(cancellationToken: stoppingToken);
 
-        // Declare the shared fan-out exchange (idempotent)
         await _channel.ExchangeDeclareAsync(
             exchange: _exchangeName,
             type: ExchangeType.Fanout,
@@ -75,7 +79,6 @@ public class EventConsumer : BackgroundService
             arguments: null,
             cancellationToken: stoppingToken);
 
-        // Declare this replica's exclusive queue
         await _channel.QueueDeclareAsync(
             queue: _queueName,
             durable: true,
@@ -84,7 +87,6 @@ public class EventConsumer : BackgroundService
             arguments: null,
             cancellationToken: stoppingToken);
 
-        // Bind the queue to the fan-out exchange
         await _channel.QueueBindAsync(
             queue: _queueName,
             exchange: _exchangeName,
@@ -92,12 +94,13 @@ public class EventConsumer : BackgroundService
             arguments: null,
             cancellationToken: stoppingToken);
 
-        _logger.LogInformation($"Queue {_queueName} bound to exchange {_exchangeName}");
+        _logger.LogInformation("Queue {QueueName} bound to exchange {ExchangeName}", _queueName, _exchangeName);
 
         var consumer = new AsyncEventingBasicConsumer(_channel);
         
         consumer.ReceivedAsync += async (model, ea) =>
         {
+            var status = "success";
             try
             {
                 var body = ea.Body.ToArray();
@@ -108,12 +111,22 @@ public class EventConsumer : BackgroundService
                 {
                     await ApplyEventAsync(replicationEvent);
                     await _channel.BasicAckAsync(ea.DeliveryTag, false);
+                    _lastEventTime = DateTime.UtcNow;
+                    
+                    MetricsRegistry.RabbitMqMessagesConsumed
+                        .WithLabels(_queueName ?? "unknown", _baseShardId ?? "unknown", status)
+                        .Inc();
                 }
             }
             catch (Exception ex)
             {
+                status = "error";
                 _logger.LogError(ex, "Error processing replication event");
                 await _channel.BasicNackAsync(ea.DeliveryTag, false, true);
+                
+                MetricsRegistry.RabbitMqMessagesConsumed
+                    .WithLabels(_queueName ?? "unknown", _baseShardId ?? "unknown", status)
+                    .Inc();
             }
 
             await Task.Yield();
@@ -125,7 +138,7 @@ public class EventConsumer : BackgroundService
             consumer: consumer,
             cancellationToken: stoppingToken);
 
-        _logger.LogInformation($"EventConsumer started consuming from queue: {_queueName}");
+        _logger.LogInformation("EventConsumer started consuming from queue: {QueueName}", _queueName);
 
         try
         {
@@ -137,13 +150,41 @@ public class EventConsumer : BackgroundService
         }
     }
 
+    private async Task MonitorReplicationLagAsync(CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                var lag = (DateTime.UtcNow - _lastEventTime).TotalSeconds;
+                MetricsRegistry.ShardReplicationLag
+                    .WithLabels(_baseShardId ?? "unknown", _replicaId ?? "unknown")
+                    .Set(lag);
+
+                await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error monitoring replication lag");
+            }
+        }
+    }
+
     private async Task CatchupWithLeaderAsync(CancellationToken cancellationToken)
     {
         try
         {
             var currentSequence = _replicationLog.GetLatestSequenceNumber();
             
-            _logger.LogInformation($"Starting catchup from sequence {currentSequence}");
+            MetricsRegistry.ShardReplicationSequenceNumber
+                .WithLabels(_baseShardId ?? "unknown", _replicaId ?? "unknown", "current")
+                .Set(currentSequence);
+            
+            _logger.LogInformation("Starting catchup from sequence {CurrentSequence}", currentSequence);
 
             var client = _httpClientFactory.CreateClient();
             var response = await client.GetAsync(
@@ -168,14 +209,24 @@ public class EventConsumer : BackgroundService
             }
 
             var leaderSequence = latestSequenceResponse.LatestSequence;
+            
+            MetricsRegistry.ShardReplicationSequenceNumber
+                .WithLabels(_baseShardId ?? "unknown", _replicaId ?? "unknown", "leader")
+                .Set(leaderSequence);
 
             if (leaderSequence <= currentSequence)
             {
-                _logger.LogInformation($"Replica is up to date (current: {currentSequence}, leader: {leaderSequence})");
+                _logger.LogInformation("Replica is up to date (current: {Current}, leader: {Leader})", 
+                    currentSequence, leaderSequence);
                 return;
             }
 
-            _logger.LogInformation($"Catchup needed: current={currentSequence}, leader={leaderSequence}, gap={leaderSequence - currentSequence}");
+            _logger.LogInformation("Catchup needed: current={Current}, leader={Leader}, gap={Gap}", 
+                currentSequence, leaderSequence, leaderSequence - currentSequence);
+            
+            MetricsRegistry.ShardReplicationGapsTotal
+                .WithLabels(_baseShardId ?? "unknown", _replicaId ?? "unknown")
+                .Inc();
             
             var catchupResponse = await client.GetAsync(
                 $"{_leaderBaseUrl}/internal/replication/events?fromSequence={currentSequence}",
@@ -198,14 +249,19 @@ public class EventConsumer : BackgroundService
                 return;
             }
 
-            _logger.LogInformation($"Applying {events.Count} catchup events");
+            _logger.LogInformation("Applying {Count} catchup events", events.Count);
 
             foreach (var evt in events.OrderBy(e => e.SequenceNumber))
             {
                 await ApplyEventAsync(evt, isCatchup: true);
             }
 
-            _logger.LogInformation($"Catchup complete. New sequence: {_replicationLog.GetLatestSequenceNumber()}");
+            var newSequence = _replicationLog.GetLatestSequenceNumber();
+            MetricsRegistry.ShardReplicationSequenceNumber
+                .WithLabels(_baseShardId ?? "unknown", _replicaId ?? "unknown", "current")
+                .Set(newSequence);
+
+            _logger.LogInformation("Catchup complete. New sequence: {NewSequence}", newSequence);
         }
         catch (Exception ex)
         {
@@ -219,14 +275,20 @@ public class EventConsumer : BackgroundService
         
         if (replicationEvent.SequenceNumber <= currentSequence)
         {
-            _logger.LogWarning($"Skipping duplicate/old sequence: {replicationEvent.SequenceNumber} (current: {currentSequence})");
+            _logger.LogWarning("Skipping duplicate/old sequence: {Sequence} (current: {Current})", 
+                replicationEvent.SequenceNumber, currentSequence);
             return;
         }
 
         var expectedSequence = currentSequence + 1;
         if (replicationEvent.SequenceNumber > expectedSequence)
         {
-            _logger.LogWarning($"Sequence gap detected: expected {expectedSequence}, got {replicationEvent.SequenceNumber}");
+            _logger.LogWarning("Sequence gap detected: expected {Expected}, got {Actual}", 
+                expectedSequence, replicationEvent.SequenceNumber);
+            
+            MetricsRegistry.ShardReplicationGapsTotal
+                .WithLabels(_baseShardId ?? "unknown", _replicaId ?? "unknown")
+                .Inc();
             
             if (!isCatchup)
             { 
@@ -234,6 +296,7 @@ public class EventConsumer : BackgroundService
             }
         }
 
+        var status = "success";
         try
         {
             switch (replicationEvent.OperationType)
@@ -244,31 +307,47 @@ public class EventConsumer : BackgroundService
                     if (tableDef != null)
                     {
                         _repository.ApplyTableRegistration(tableDef);
-                        _logger.LogInformation($"Applied TableRegistration: {tableDef.TableName} (seq: {replicationEvent.SequenceNumber})");
+                        _logger.LogInformation("Applied TableRegistration: {TableName} (seq: {Sequence})", 
+                            tableDef.TableName, replicationEvent.SequenceNumber);
                     }
                     break;
 
                 case OperationType.Create:
                     await _repository.ApplyCreateAsync(replicationEvent.TableName, replicationEvent.Data);
-                    _logger.LogInformation($"Applied Create: {replicationEvent.TableName} (seq: {replicationEvent.SequenceNumber})");
+                    _logger.LogInformation("Applied Create: {TableName} (seq: {Sequence})", 
+                        replicationEvent.TableName, replicationEvent.SequenceNumber);
                     break;
 
                 case OperationType.Update:
                     await _repository.ApplyUpdateAsync(replicationEvent.TableName, replicationEvent.Data);
-                    _logger.LogInformation($"Applied Update: {replicationEvent.TableName} (seq: {replicationEvent.SequenceNumber})");
+                    _logger.LogInformation("Applied Update: {TableName} (seq: {Sequence})", 
+                        replicationEvent.TableName, replicationEvent.SequenceNumber);
                     break;
 
                 case OperationType.Delete:
                     await _repository.ApplyDeleteAsync(replicationEvent.TableName, replicationEvent.Data);
-                    _logger.LogInformation($"Applied Delete: {replicationEvent.TableName} (seq: {replicationEvent.SequenceNumber})");
+                    _logger.LogInformation("Applied Delete: {TableName} (seq: {Sequence})", 
+                        replicationEvent.TableName, replicationEvent.SequenceNumber);
                     break;
             }
             _replicationLog.AppendEvent(replicationEvent);
+            
+            MetricsRegistry.ShardReplicationSequenceNumber
+                .WithLabels(_baseShardId ?? "unknown", _replicaId ?? "unknown", "current")
+                .Set(replicationEvent.SequenceNumber);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, $"Failed to apply event {replicationEvent.SequenceNumber}");
+            status = "error";
+            _logger.LogError(ex, "Failed to apply event {Sequence}", replicationEvent.SequenceNumber);
             throw;
+        }
+        finally
+        {
+            MetricsRegistry.ShardReplicationEventsTotal
+                .WithLabels(_baseShardId ?? "unknown", _replicaId ?? "unknown", 
+                    replicationEvent.OperationType.ToString(), status)
+                .Inc();
         }
     }
 
